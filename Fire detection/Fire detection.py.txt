@@ -1,0 +1,109 @@
+# import libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Conv2D, Flatten, TimeDistributed, Dropout, BatchNormalization
+import os
+
+# تحميل بيانات التدريب
+train_data = pd.read_csv('/content/train.csv')
+test_data = pd.read_csv('/content/test.csv')
+
+# استعراض البيانات
+print(train_data.head())
+print(test_data.head())
+
+# اختيار الأعمدة الرقمية فقط
+numeric_cols = train_data.select_dtypes(include=np.number).columns.tolist()
+print(f'Numeric columns: {numeric_cols}')
+
+# تحسين البيانات للأعمدة الرقمية فقط
+train_data[numeric_cols] = train_data[numeric_cols] / 255.0
+test_data[numeric_cols] = test_data[numeric_cols] / 255.0
+
+# معالجة القيم المفقودة (إذا كانت موجودة)
+# Select only numeric columns for calculating the mean
+train_data[numeric_cols] = train_data[numeric_cols].fillna(train_data[numeric_cols].mean())
+test_data[numeric_cols] = test_data[numeric_cols].fillna(test_data[numeric_cols].mean())
+
+# تحليل البيانات (تحليل الوصف الأساسي)
+print(train_data.describe())
+sns.pairplot(train_data[numeric_cols])
+plt.show()
+
+# إضافة ميزات جديدة (مثل تفاعل الميزات)
+for col1 in numeric_cols:
+    for col2 in numeric_cols:
+        if col1 != col2:
+            train_data[f'{col1}_x_{col2}'] = train_data[col1] * train_data[col2]
+            test_data[f'{col1}_x_{col2}'] = test_data[col1] * test_data[col2]
+
+# تقسيم البيانات إلى ميزات وأهداف
+X = train_data.drop(columns=['xi_filename'])  
+y = train_data['xi_filename']
+
+# تقسيم البيانات إلى مجموعة تدريب واختبار
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Use only numeric columns for PCA
+numeric_cols = X_train.select_dtypes(include=np.number).columns.tolist()
+X_train_numeric = X_train[numeric_cols]
+X_val_numeric = X_val[numeric_cols]
+test_data_numeric = test_data[numeric_cols]
+
+# استخدام PCA لتقليل الأبعاد (اختياري)
+pca = PCA(n_components=0.95)  # احتفظ بـ 95% من التباين
+X_train_pca = pca.fit_transform(X_train_numeric)
+X_val_pca = pca.transform(X_val_numeric)
+test_data_pca = pca.transform(test_data_numeric)
+
+# بناء نموذج LSTM مع معالجة بيانات تسلسلية
+def create_model(input_shape):
+    model = Sequential()
+    model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
+    model.add(Dropout(0.2))
+    model.add(LSTM(64, return_sequences=False))
+    model.add(Dropout(0.2))
+    model.add(Dense(32, activation='relu'))
+    model.add(Dense(1, activation='sigmoid'))  # أو استخدم 'softmax' لعدة فئات
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# إعادة تشكيل البيانات لـ LSTM
+X_train_reshaped = X_train_pca.reshape((X_train_pca.shape[0], 1, X_train_pca.shape[1]))
+X_val_reshaped = X_val_pca.reshape((X_val_pca.shape[0], 1, X_val_pca.shape[1]))
+input_shape = (X_train_reshaped.shape[1], X_train_reshaped.shape[2])
+
+# بناء النموذج
+model = create_model(input_shape)
+model.summary()
+
+# تدريب النموذج
+history = model.fit(X_train_reshaped, y_train, epochs=100, batch_size=32,validation_data=(X_val_reshaped, y_val))
+
+# تقييم النموذج
+loss, accuracy = model.evaluate(X_val_reshaped, y_val)
+print(f'Validation Loss: {loss}, Validation Accuracy: {accuracy}')
+
+# إجراء التنبؤات على بيانات الاختبار
+test_data_reshaped = test_data_pca.reshape((test_data_pca.shape[0], 1, test_data_pca.shape[1]))
+predictions = model.predict(test_data_reshaped)
+
+# تقديم النتائج
+submission = pd.DataFrame({'Predictions': predictions.flatten()})
+submission.to_csv('submission.csv', index=False)
+
+# تصور النتائج
+plt.figure(figsize=(10, 6))
+plt.plot(history.history['accuracy'], label='Training Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.title('Model Accuracy')
+plt.ylabel('Accuracy')
+plt.xlabel('Epoch')
+plt.legend(loc='upper left')
+plt.show()
